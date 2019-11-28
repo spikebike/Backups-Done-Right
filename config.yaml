@@ -1,0 +1,9 @@
+
+client:
+        private_key: ../certs/client.key
+        public_key:  ../certs/client.pem
+        backup_dirs: 
+        - a
+        - b
+        - c
+
