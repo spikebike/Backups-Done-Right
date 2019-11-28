@@ -3,8 +3,8 @@ package main
 import "C"
 
 import (
-	"./bdrsql"
-	"./bdrupload"
+	"github.com/spikebike/Backups-Done-Right/bdrsql"
+	"github.com/spikebike/Backups-Done-Right/bdrupload"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	configFile = flag.String("config", "../etc/config.cfg", "Defines where to load configuration from")
+	configFile = flag.String("config", "etc/config.cfg", "Defines where to load configuration from")
 	newDB      = flag.Bool("new-db", false, "true = creates a new database | false = use existing database")
 	debug_flag = flag.Bool("debug", false, "activates debug mode")
 	pool_flag  = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
@@ -264,5 +264,5 @@ func main() {
 		seconds := float64(tn1-tn0) / 1000000000
 		log.Printf("%d threads %s %s/sec in %4.2f seconds\n", pool, ByteSize(float64(bytesDone)), ByteSize(float64(bytesDone)/seconds),seconds)
 	}
-	log.Printf("uploading successfully finished\n")
+	log.Printf("uploading successfully finished\n") 
 }
