@@ -13,7 +13,7 @@ type clientInfo struct {
 }
 
 func main () {
-	viper.SetConfigFile("config.yaml")
+	viper.SetConfigFile("etc/config.yaml")
 	       if err := viper.ReadInConfig(); err != nil {
                 log.Fatalf("Error reading config file, %s", err)
         }
