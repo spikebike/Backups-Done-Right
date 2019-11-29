@@ -17,10 +17,10 @@ import (
 )
 
 var (
-	configFile = flag.String("config", "etc/config.cfg", "Defines where to load configuration from")
+	configFile = flag.String("config", "etc/config.yaml", "Defines where to load configuration from")
 	newDB      = flag.Bool("new-db", false, "true = creates a new database | false = use existing database")
 	debug_flag = flag.Bool("debug", false, "activates debug mode")
-
+   threadsOverride = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
 	upchan   = make(chan *bdrupload.Upchan_t, 100)
 	downchan = make(chan *bdrupload.Downchan_t, 100)
 	done     = make(chan int64)
@@ -103,6 +103,7 @@ func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName 
 	dDir = 0
 	start := time.Now().Unix()
 	i = 0
+	// make dirlist a channel?
 	for _, dirname := range dirList {
 		// get dirID of dirname, even if it needs inserted.
 		log.Printf("working on %s\n",dirname)
@@ -130,8 +131,10 @@ func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName 
 				fileC++ //track files per backup
 				dFile++ //trace files per directory
 				// and it's been modified since last backup
-				if f.ModTime().Unix() <= SQLmap[f.Name()] {
-					// log.Printf("NO backup needed for %s \n",f.Name())
+				log.Printf("f.modtime %v", f.ModTime().Unix())
+				log.Printf("SQLmap[f.Name()] %v",SQLmap[f.Name()])
+				if f.ModTime().Unix() >= SQLmap[f.Name()] {
+					log.Printf("NO backup needed for %s \n",f.Name())
 					Fmap[f.Name()] = f.ModTime().Unix()
 				} else {
 					log.Printf("backup needed for %s \n",f.Name())
@@ -144,6 +147,7 @@ func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName 
 				fullpath := filepath.Join(dirname, f.Name())
 
 				if !checkPath(dirList, excludeList, fullpath) {
+					log.Printf("trying to append %v\n",fullpath)
 					dirList = append(dirList, fullpath)
 				}
 			}
@@ -175,7 +179,7 @@ func main() {
 
 	log.Printf("loading config file from %s\n", *configFile)
 
-	viper.SetConfigFile("etc/config.yaml")
+	viper.SetConfigFile(*configFile)
 	if err := viper.ReadInConfig(); err != nil {
 		log.Fatalf("Error reading config file, %s", err)
 	}
@@ -186,7 +190,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("unable to decode into struct, %v", err)
 	}
-
+   if threadsOverride != nil {
+		C.Threads = *threadsOverride
+	}
 	runtime.GOMAXPROCS(C.Threads)
 
 	os.Mkdir(C.QueueBlobDir+"/tmp", 0700)
