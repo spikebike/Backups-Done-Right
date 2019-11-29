@@ -1,15 +1,13 @@
 package main
 
-import "C"
-
 import (
-	"github.com/spikebike/Backups-Done-Right/bdrsql"
-	"github.com/spikebike/Backups-Done-Right/bdrupload"
 	"database/sql"
 	"flag"
 	"fmt"
-	"github.com/msbranco/goconfig"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/spf13/viper"
+	"github.com/spikebike/Backups-Done-Right/bdrsql"
+	"github.com/spikebike/Backups-Done-Right/bdrupload"
 	"log"
 	"os"
 	"path/filepath"
@@ -22,15 +20,24 @@ var (
 	configFile = flag.String("config", "etc/config.cfg", "Defines where to load configuration from")
 	newDB      = flag.Bool("new-db", false, "true = creates a new database | false = use existing database")
 	debug_flag = flag.Bool("debug", false, "activates debug mode")
-	pool_flag  = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
 
 	upchan   = make(chan *bdrupload.Upchan_t, 100)
 	downchan = make(chan *bdrupload.Downchan_t, 100)
 	done     = make(chan int64)
 
-	pool  int
 	debug bool
 )
+
+type clientInfo struct {
+   PrivateKey   string
+   PublicKey    string
+   BackupDirs   []string
+   ExcludeDirs  []string
+   Threads      int
+   SqlFile      string
+   QueueBlobDir string
+}
+
 
 type ByteSize float64
 
@@ -82,31 +89,23 @@ func checkPath(dirArray []string, excludeArray []string, dir string) bool {
 	return false
 }
 
-func backupDir(db *sql.DB, dirList string, excludeList string, dataBaseName string) error {
-	var dirname string
+func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName string) error {
 	var i int
 	var fileC int64
 	var backupFileC int64
 	var dirC int64
 	var dFile int64
 	var dDir int64
-	var excludeArray []string
 	fileC = 0
 	dirC = 0
 	backupFileC = 0
 	dFile = 0
 	dDir = 0
 	start := time.Now().Unix()
-	dirArray := strings.Split(dirList, " ")
-	if excludeList != "" {
-		excludeArray = strings.Split(excludeList, " ")
-	} else {
-		excludeArray = nil
-	}
 	i = 0
-	for i < len(dirArray) {
-		dirname = dirArray[i]
+	for _, dirname := range dirList {
 		// get dirID of dirname, even if it needs inserted.
+		log.Printf("working on %s\n",dirname)
 		dirID, err := bdrsql.GetSQLID(db, "dirs", "path", dirname)
 		// get a map for filename -> modified time
 		SQLmap := bdrsql.GetSQLFiles(db, dirID)
@@ -135,7 +134,7 @@ func backupDir(db *sql.DB, dirList string, excludeList string, dataBaseName stri
 					// log.Printf("NO backup needed for %s \n",f.Name())
 					Fmap[f.Name()] = f.ModTime().Unix()
 				} else {
-					// log.Printf("backup needed for %s \n",f.Name())
+					log.Printf("backup needed for %s \n",f.Name())
 					backupFileC++
 					bdrsql.InsertSQLFile(db, f, dirID)
 				}
@@ -144,8 +143,8 @@ func backupDir(db *sql.DB, dirList string, excludeList string, dataBaseName stri
 				dDir++ //track subdirs per directory
 				fullpath := filepath.Join(dirname, f.Name())
 
-				if !checkPath(dirArray, excludeArray, fullpath) {
-					dirArray = append(dirArray, fullpath)
+				if !checkPath(dirList, excludeList, fullpath) {
+					dirList = append(dirList, fullpath)
 				}
 			}
 		}
@@ -175,50 +174,29 @@ func main() {
 	debug = *debug_flag
 
 	log.Printf("loading config file from %s\n", *configFile)
-	configF, err := goconfig.ReadConfigFile(*configFile)
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
+
+	viper.SetConfigFile("etc/config.yaml")
+	if err := viper.ReadInConfig(); err != nil {
+		log.Fatalf("Error reading config file, %s", err)
 	}
 
-	pool_config, err := configF.GetInt64("Client", "threads")
+	var C clientInfo
+	prod := viper.Sub("client")
+	err := prod.Unmarshal(&C)
 	if err != nil {
-		log.Fatalf("ERROR: %s", err)
+		log.Fatalf("unable to decode into struct, %v", err)
 	}
-	if *pool_flag != 0 {
-		pool = *pool_flag
+
+	runtime.GOMAXPROCS(C.Threads)
+
+	os.Mkdir(C.QueueBlobDir+"/tmp", 0700)
+	os.Mkdir(C.QueueBlobDir+"/blob", 0700)
+
+	db, err := bdrsql.Init_db(C.SqlFile, *newDB, debug)
+	if err != nil {
+		log.Printf("could not open %s, error: %s", C.SqlFile, err)
 	} else {
-		pool = int(pool_config)
-	}
-	runtime.GOMAXPROCS(pool)
-
-	dirList, err := configF.GetString("Client", "backup_dirs_secure")
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	}
-
-	excludeList, err := configF.GetString("Client", "exclude_dirs")
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	}
-
-	dataBaseName, err := configF.GetString("Client", "sql_file")
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	}
-
-	queueBlobDir, err := configF.GetString("Client", "queue_blobs")
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	} else {
-		os.Mkdir(queueBlobDir+"/tmp", 0700)
-		os.Mkdir(queueBlobDir+"/blob", 0700)
-	}
-
-	db, err := bdrsql.Init_db(dataBaseName, *newDB, debug)
-	if err != nil {
-		log.Printf("could not open %s, error: %s", dataBaseName, err)
-	} else {
-		log.Printf("opened database %v\n", dataBaseName)
+		log.Printf("opened database %v\n", C.SqlFile)
 	}
 
 	err = bdrsql.CreateClientTables(db)
@@ -227,11 +205,11 @@ func main() {
 	} else {
 		log.Printf("created tables\n")
 	}
-
-	log.Printf("backing up these directories: %s\n", dirList)
+   fmt.Println(C.BackupDirs)
+	log.Printf("backing up these directories: %s\n", C.BackupDirs)
 	log.Printf("start walking...")
 	t0 := time.Now()
-	err = backupDir(db, dirList, excludeList, dataBaseName)
+	err = backupDir(db, C.BackupDirs, C.ExcludeDirs, C.SqlFile)
 	t1 := time.Now()
 	duration := t1.Sub(t0)
 	if err != nil {
@@ -245,24 +223,24 @@ func main() {
 	// db, _ = bdrsql.BackupDB(db,dataBaseName)
 	// launch server to receive uploads
 	tn0 := time.Now().UnixNano()
-	for i := 0; i < pool; i++ {
-		go bdrupload.Uploader(upchan, done, debug, queueBlobDir)
+	for i := 0; i < C.Threads; i++ {
+		go bdrupload.Uploader(upchan, done, debug, C.QueueBlobDir)
 	}
-	log.Printf("started %d uploaders\n", pool)
+	log.Printf("started %d uploaders\n", C.Threads)
 	// send all files to be uploaded to server.
 
 	log.Printf("started sending files to uploaders...\n")
 	bdrsql.SQLUpload(db, upchan)
 	bytesDone = 0
 	bytes = 0
-	for i := 0; i < pool; i++ {
+	for i := 0; i < C.Threads; i++ {
 		bytes = <-done
 		bytesDone += bytes
 	}
 	tn1 := time.Now().UnixNano()
 	if debug == true {
 		seconds := float64(tn1-tn0) / 1000000000
-		log.Printf("%d threads %s %s/sec in %4.2f seconds\n", pool, ByteSize(float64(bytesDone)), ByteSize(float64(bytesDone)/seconds),seconds)
+		log.Printf("%d threads %s %s/sec in %4.2f seconds\n", C.Threads, ByteSize(float64(bytesDone)), ByteSize(float64(bytesDone)/seconds), seconds)
 	}
-	log.Printf("uploading successfully finished\n") 
+	log.Printf("uploading successfully finished\n")
 }
