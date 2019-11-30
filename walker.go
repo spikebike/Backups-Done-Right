@@ -1,16 +1,15 @@
 package main
 
 import (
-	"database/sql"
 	"flag"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/spf13/viper"
 	"github.com/spikebike/Backups-Done-Right/bdrsql"
 	"github.com/spikebike/Backups-Done-Right/bdrupload"
+   "github.com/spikebike/Backups-Done-Right/backupdir"
 	"log"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -23,7 +22,7 @@ var (
 	threadsOverride = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
 	upchan          = make(chan *bdrupload.Upchan_t, 100)
 	downchan        = make(chan *bdrupload.Downchan_t, 100)
-	dirChan         = make(chan string)
+	dirChan         = make(chan string,100)
 	dirDone         = make(chan bool)
 	done            = make(chan int64)
 
@@ -90,74 +89,6 @@ func checkPath(dirArray []string, excludeArray []string, dir string) bool {
 	return false
 }
 
-func backupDir(db *sql.DB, dirChan chan string, excludeDirMap map[string]bool, dataBaseName string) error {
-	var numFiles int64
-	var numDirs int64
-	var backupFileC int64
-	numFiles = 0
-	numDirs = 0
-	backupFileC = 0
-	start := time.Now().Unix()
-	// make dirlist a channel?
-	for dirname := range dirChan {
-			//	for _, dirname := range dirList {
-			// get dirID of dirname, even if it needs inserted.
-			log.Printf("scanning dir %s\n", dirname)
-			dirID, err := bdrsql.GetSQLID(db, "dirs", "path", dirname)
-			// get metadata for entire dir, instead of query per file
-			SQLmap := bdrsql.GetSQLFiles(db, dirID)
-			d, err := os.Open(dirname)
-			if err != nil {
-				log.Printf("failed to open %s error : %s", dirname, err)
-				os.Exit(1)
-			}
-			fi, err := d.Readdir(-1)
-			if err != nil {
-				log.Printf("directory %s failed with error %s", dirname, err)
-			}
-			Fmap := map[string]int64{}
-			for _, f := range fi { // Iterate over the entire directory
-				if !f.IsDir() {
-					numFiles++ //track files per backup
-					// and it's been modified since last backup
-					log.Printf("f.modtime %v", f.ModTime().Unix())
-					log.Printf("SQLmap[f.Name()] %v", SQLmap[f.Name()])
-					if f.ModTime().Unix() <= SQLmap[f.Name()] {
-						log.Printf("NO backup needed for %s \n", f.Name())
-						Fmap[f.Name()] = f.ModTime().Unix()
-					} else {
-						log.Printf("backup needed for %s \n", f.Name())
-						backupFileC++
-						bdrsql.InsertSQLFile(db, f, dirID)
-					}
-				} else { // is directory
-					numDirs++ //track directories per backup
-					fullpath := filepath.Join(dirname, f.Name())
-					fmt.Printf("considering dir %s ******\n", f.Name())
-					if !excludeDirMap[f.Name()] {
-						dirChan <- fullpath
-						log.Printf("trying to append %v\n", fullpath)
-					}
-				}
-			}
-			// All files that we've seen, set last_seen
-			t1 := time.Now().UnixNano()
-			bdrsql.SetSQLSeen(db, Fmap, dirID)
-			if debug == true {
-				t2 := time.Now().UnixNano()
-				fmt.Printf("files=%d dirs=%d duration=%dms\n", numFiles, numDirs, (t2-t1)/1000000)
-			}
-	}
-	// if we have not seen the files since start it must have been deleted.
-	bdrsql.SetSQLDeleted(db, start)
-
-	log.Printf("scanned %d files and %d directories\n", numFiles, numDirs)
-	log.Printf("%d files scheduled for backup\n", backupFileC)
-	dirDone <- true
-
-	return nil
-}
-
 func main() {
 	var bytes int64
 	var bytesDone int64
@@ -204,11 +135,11 @@ func main() {
 		log.Printf("created tables\n")
 	}
 	t0 := time.Now()
-	go backupDir(db, dirChan, excludeDirMap, C.SqlFile)
 	for _, tDir := range C.BackupDirs {
 		dirChan <- tDir
 		log.Printf("adding %s to backup dir queue\n", tDir)
 	}
+	go backupdir.BackupDir(db, dirChan, dirDone, excludeDirMap, C.SqlFile)
 	<-dirDone
 	t1 := time.Now()
 	duration := t1.Sub(t0)
