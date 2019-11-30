@@ -3,10 +3,13 @@ client:
         PrivateKey: ../certs/client.key
         PublicKey:  ../certs/client.pem
         BackupDirs: 
-        - test
+        - test/1
+        - test/2
         Threads: 4
         SqlFile: etc/fsmeta.sql
         QueueBlobDir: /tmp/bdr
-        ExcludeDirs: .git
-
+        ExcludeDirs:
+        - .git 
+        - .tmp
+        ExcludeDirFile: CACHEDIR.TAG
 

@@ -17,27 +17,28 @@ import (
 )
 
 var (
-	configFile = flag.String("config", "etc/config.yaml", "Defines where to load configuration from")
-	newDB      = flag.Bool("new-db", false, "true = creates a new database | false = use existing database")
-	debug_flag = flag.Bool("debug", false, "activates debug mode")
-   threadsOverride = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
-	upchan   = make(chan *bdrupload.Upchan_t, 100)
-	downchan = make(chan *bdrupload.Downchan_t, 100)
-	done     = make(chan int64)
+	configFile      = flag.String("config", "etc/config.yaml", "Defines where to load configuration from")
+	newDB           = flag.Bool("new-db", false, "true = creates a new database | false = use existing database")
+	debug_flag      = flag.Bool("debug", false, "activates debug mode")
+	threadsOverride = flag.Int("threads", 0, "overwrites threads in [Client] section in config.cfg")
+	upchan          = make(chan *bdrupload.Upchan_t, 100)
+	downchan        = make(chan *bdrupload.Downchan_t, 100)
+	dirChan         = make(chan string)
+	dirDone         = make(chan bool)
+	done            = make(chan int64)
 
 	debug bool
 )
 
 type clientInfo struct {
-   PrivateKey   string
-   PublicKey    string
-   BackupDirs   []string
-   ExcludeDirs  []string
-   Threads      int
-   SqlFile      string
-   QueueBlobDir string
+	PrivateKey   string
+	PublicKey    string
+	BackupDirs   []string
+	ExcludeDirs  []string
+	Threads      int
+	SqlFile      string
+	QueueBlobDir string
 }
-
 
 type ByteSize float64
 
@@ -89,83 +90,70 @@ func checkPath(dirArray []string, excludeArray []string, dir string) bool {
 	return false
 }
 
-func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName string) error {
-	var i int
-	var fileC int64
+func backupDir(db *sql.DB, dirChan chan string, excludeDirMap map[string]bool, dataBaseName string) error {
+	var numFiles int64
+	var numDirs int64
 	var backupFileC int64
-	var dirC int64
-	var dFile int64
-	var dDir int64
-	fileC = 0
-	dirC = 0
+	numFiles = 0
+	numDirs = 0
 	backupFileC = 0
-	dFile = 0
-	dDir = 0
 	start := time.Now().Unix()
-	i = 0
 	// make dirlist a channel?
-	for _, dirname := range dirList {
-		// get dirID of dirname, even if it needs inserted.
-		log.Printf("working on %s\n",dirname)
-		dirID, err := bdrsql.GetSQLID(db, "dirs", "path", dirname)
-		// get a map for filename -> modified time
-		SQLmap := bdrsql.GetSQLFiles(db, dirID)
-		if debug == true {
-			fmt.Printf("scanning dir %s ", dirname)
-		}
-		d, err := os.Open(dirname)
-		if err != nil {
-			log.Printf("failed to open %s error : %s", dirname, err)
-			os.Exit(1)
-		}
-		fi, err := d.Readdir(-1)
-		if err != nil {
-			log.Printf("directory %s failed with error %s", dirname, err)
-		}
-		Fmap := map[string]int64{}
-		// Iterate over the entire directory
-		dFile = 0
-		dDir = 0
-		for _, f := range fi {
-			if !f.IsDir() {
-				fileC++ //track files per backup
-				dFile++ //trace files per directory
-				// and it's been modified since last backup
-				log.Printf("f.modtime %v", f.ModTime().Unix())
-				log.Printf("SQLmap[f.Name()] %v",SQLmap[f.Name()])
-				if f.ModTime().Unix() >= SQLmap[f.Name()] {
-					log.Printf("NO backup needed for %s \n",f.Name())
-					Fmap[f.Name()] = f.ModTime().Unix()
-				} else {
-					log.Printf("backup needed for %s \n",f.Name())
-					backupFileC++
-					bdrsql.InsertSQLFile(db, f, dirID)
-				}
-			} else { // is directory
-				dirC++ //track directories per backup
-				dDir++ //track subdirs per directory
-				fullpath := filepath.Join(dirname, f.Name())
-
-				if !checkPath(dirList, excludeList, fullpath) {
-					log.Printf("trying to append %v\n",fullpath)
-					dirList = append(dirList, fullpath)
+	for dirname := range dirChan {
+			//	for _, dirname := range dirList {
+			// get dirID of dirname, even if it needs inserted.
+			log.Printf("scanning dir %s\n", dirname)
+			dirID, err := bdrsql.GetSQLID(db, "dirs", "path", dirname)
+			// get metadata for entire dir, instead of query per file
+			SQLmap := bdrsql.GetSQLFiles(db, dirID)
+			d, err := os.Open(dirname)
+			if err != nil {
+				log.Printf("failed to open %s error : %s", dirname, err)
+				os.Exit(1)
+			}
+			fi, err := d.Readdir(-1)
+			if err != nil {
+				log.Printf("directory %s failed with error %s", dirname, err)
+			}
+			Fmap := map[string]int64{}
+			for _, f := range fi { // Iterate over the entire directory
+				if !f.IsDir() {
+					numFiles++ //track files per backup
+					// and it's been modified since last backup
+					log.Printf("f.modtime %v", f.ModTime().Unix())
+					log.Printf("SQLmap[f.Name()] %v", SQLmap[f.Name()])
+					if f.ModTime().Unix() <= SQLmap[f.Name()] {
+						log.Printf("NO backup needed for %s \n", f.Name())
+						Fmap[f.Name()] = f.ModTime().Unix()
+					} else {
+						log.Printf("backup needed for %s \n", f.Name())
+						backupFileC++
+						bdrsql.InsertSQLFile(db, f, dirID)
+					}
+				} else { // is directory
+					numDirs++ //track directories per backup
+					fullpath := filepath.Join(dirname, f.Name())
+					fmt.Printf("considering dir %s ******\n", f.Name())
+					if !excludeDirMap[f.Name()] {
+						dirChan <- fullpath
+						log.Printf("trying to append %v\n", fullpath)
+					}
 				}
 			}
-		}
-		// All files that we've seen, set last_seen
-		t1 := time.Now().UnixNano()
-		bdrsql.SetSQLSeen(db, Fmap, dirID)
-		if debug == true {
-			t2 := time.Now().UnixNano()
-			fmt.Printf("files=%d dirs=%d duration=%dms\n", dFile, dDir, (t2-t1)/1000000)
-		}
-		i++
+			// All files that we've seen, set last_seen
+			t1 := time.Now().UnixNano()
+			bdrsql.SetSQLSeen(db, Fmap, dirID)
+			if debug == true {
+				t2 := time.Now().UnixNano()
+				fmt.Printf("files=%d dirs=%d duration=%dms\n", numFiles, numDirs, (t2-t1)/1000000)
+			}
 	}
 	// if we have not seen the files since start it must have been deleted.
 	bdrsql.SetSQLDeleted(db, start)
 
-	log.Printf("scanned %d files and %d directories\n", fileC, dirC)
+	log.Printf("scanned %d files and %d directories\n", numFiles, numDirs)
 	log.Printf("%d files scheduled for backup\n", backupFileC)
+	dirDone <- true
 
 	return nil
 }
@@ -173,7 +161,7 @@ func backupDir(db *sql.DB, dirList []string, excludeList []string, dataBaseName 
 func main() {
 	var bytes int64
 	var bytesDone int64
-
+	//	var excludeDirMap map[string]bool
 	flag.Parse()
 	debug = *debug_flag
 
@@ -190,7 +178,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("unable to decode into struct, %v", err)
 	}
-   if threadsOverride != nil {
+	excludeDirMap := make(map[string]bool)
+	for _, excludeDir := range C.ExcludeDirs {
+		excludeDirMap[excludeDir] = true
+	}
+	if threadsOverride != nil {
 		C.Threads = *threadsOverride
 	}
 	runtime.GOMAXPROCS(C.Threads)
@@ -211,11 +203,13 @@ func main() {
 	} else {
 		log.Printf("created tables\n")
 	}
-   fmt.Println(C.BackupDirs)
-	log.Printf("backing up these directories: %s\n", C.BackupDirs)
-	log.Printf("start walking...")
 	t0 := time.Now()
-	err = backupDir(db, C.BackupDirs, C.ExcludeDirs, C.SqlFile)
+	go backupDir(db, dirChan, excludeDirMap, C.SqlFile)
+	for _, tDir := range C.BackupDirs {
+		dirChan <- tDir
+		log.Printf("adding %s to backup dir queue\n", tDir)
+	}
+	<-dirDone
 	t1 := time.Now()
 	duration := t1.Sub(t0)
 	if err != nil {
