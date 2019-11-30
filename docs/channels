@@ -1,0 +1,24 @@
+
+main:
+	reads config files
+	parses arguments
+	sends backup directories -> dirChan
+	launches the directory walker
+
+backupDir: suggested one per RAID/pool/collection of disks
+	consumes dirChan
+	writes filenames -> upLoadChan
+
+bdrUpload: suggested one per CPU
+	consumes upLoadChan
+	reads changes/added files
+	writes encrypted and checksumed blobs into /tmp/bdr
+
+bdrSQL: SOLE proces that reads/writes SQL
+	uses a switch statement to ensure only a single SQL op happens at once
+	handles channels for:
+		SQLmap - all the metadata for a dir
+		SQLupdate - update file meta, once a blob is uploaded
+
+   
+
