@@ -255,6 +255,20 @@ func GetDBSize(DataBaseName string) int64 {
 	return fi.Size()
 }
 
+func sqlServer (db *sql.DB) {
+/* this will run as a separate process.  This select statement will ensure
+that only a single SQL query happens at once.  This allow multiple processes to safely use the sqlite database */
+	for {
+		select {
+		case sqlMapQ := <- sqlMAPQC // return timestamps for entire dir
+		case InsertSQLFile // insert metadata about new file
+		case // update all file list for last_seen
+      case // handle all files not found, to deleted
+		}
+	}
+}
+
+
 func main_test() {
 	db, _ := Init_db("fsmeta.sql", true, false)
 	id, _ := GetSQLID(db, "dirs", "path", "/home/bill/bdr/src/bdrsql")

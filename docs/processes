@@ -1,0 +1,4 @@
+#1 for loading config file, main, launching go processes
+#2 one per CPU for compression, sha256, and encyrption
+#3 one CPU for SQLite (which is not thread safe)
+
