@@ -1,0 +1,10 @@
+
+The backup client will read a local configuration file and scan local directories for new files.
+
+Filesystem metadata will be tracked by a local sqlite3 database.
+
+The client will compress, encrypt, and checksum the files and upload the encrypted blobs to a server, which will deduplicate as part of the upload process.
+
+The server side will collect encrypted blobs into chunks, then add a reed solomon based redundancy.  The resulting shards will be traded with other peers to ensure the desired level of replication.
+
+
